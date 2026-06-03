@@ -10,11 +10,11 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.8
-  excel: any
-  path_provider: any
-  share_plus: any
-  intl: any
-  permission_handler: any
+  excel: ^4.0.2
+  path_provider: ^2.1.0
+  share_plus: ^7.2.2
+  intl: ^0.19.0
+  permission_handler: ^11.3.0
 
 dev_dependencies:
   flutter_test:
