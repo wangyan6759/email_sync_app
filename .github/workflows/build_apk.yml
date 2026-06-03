@@ -27,6 +27,17 @@ jobs:
           flutter-version: '3.27.1'
           channel: 'stable'
 
+      - name: 修复 Gradle Wrapper
+        run: |
+          cd android
+          # 如果 gradle-wrapper.jar 缺失或损坏，重新生成
+          if [ ! -f gradle/wrapper/gradle-wrapper.jar ] || [ "$(stat -c%s gradle/wrapper/gradle-wrapper.jar)" -lt 50000 ]; then
+            echo "Regenerating Gradle wrapper..."
+            rm -f gradle/wrapper/gradle-wrapper.jar gradlew gradlew.bat
+            gradle wrapper --gradle-version=8.3
+          fi
+          ls -la gradle/wrapper/
+
       - name: 安装依赖
         run: flutter pub get
 
