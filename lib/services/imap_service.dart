@@ -403,17 +403,17 @@ class ImapService {
         }
 
         if (inHeader) {
-          if (line.startsWith('Subject:', caseSensitive: false)) {
+          if (line.toLowerCase().startsWith('subject:')) {
             subject = _decodeMimeHeader(
               line.substring(8).trim(),
             );
-          } else if (line.startsWith('From:', caseSensitive: false)) {
+          } else if (line.toLowerCase().startsWith('from:')) {
             from = _decodeMimeHeader(line.substring(5).trim());
-          } else if (line.startsWith('To:', caseSensitive: false)) {
+          } else if (line.toLowerCase().startsWith('to:')) {
             to = _decodeMimeHeader(line.substring(3).trim());
-          } else if (line.startsWith('Cc:', caseSensitive: false)) {
+          } else if (line.toLowerCase().startsWith('cc:')) {
             cc = _decodeMimeHeader(line.substring(3).trim());
-          } else if (line.startsWith('Date:', caseSensitive: false)) {
+          } else if (line.toLowerCase().startsWith('date:')) {
             date = line.substring(5).trim();
           }
         } else if (inBody) {
