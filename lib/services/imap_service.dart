@@ -9,94 +9,128 @@ class ImapService {
   String _buffer = '';
   bool _loggedIn = false;
   int _tagCounter = 0;
+  String? _lastError;
 
-  /// 连接到 IMAP 服务器
+  String? get lastError => _lastError;
+
+  /// 连接到 IMAP 服务器（根据配置自动选择 SSL 或普通连接）
   Future<bool> connect(ImapConfig config) async {
     try {
-      _socket = await Socket.connect(
-        config.server,
-        config.port,
-        timeout: const Duration(seconds: 15),
-      );
-
-      // 如果是 SSL，Flutter 的 Socket 不支持直接 SSL
-      // 需要使用 SecureSocket
+      _lastError = null;
+      
       if (config.useSSL) {
-        // 实际上对于 993 端口，我们应该使用 SecureSocket
-        // 但为了简化，我们仍然使用普通 Socket + STARTTLS
-        // 注意：995(POP3S)/993(IMAPS) 需要 SecureSocket
+        return await _connectSecure(config);
+      } else {
+        return await _connectPlain(config);
       }
-
-      _socket!.listen(
-        (data) {
-          _buffer += utf8.decode(data);
-        },
-        onError: (error) {
-          print('Socket error: $error');
-        },
-        onDone: () {
-          print('Socket closed');
-        },
-      );
-
-      // 等待欢迎信息
-      await _readResponse(timeout: 5);
-
-      // 登录
-      return await _login(config.username, config.password);
-    } catch (e) {
-      print('连接失败: $e');
+    } catch (e, stackTrace) {
+      _lastError = '连接失败: $e\n$stackTrace';
+      print(_lastError);
       return false;
     }
   }
 
-  /// 使用 SecureSocket 连接（用于 993 端口）
-  Future<bool> connectSecure(ImapConfig config) async {
+  /// 普通连接（无 SSL）
+  Future<bool> _connectPlain(ImapConfig config) async {
     try {
+      print('正在连接 ${config.server}:${config.port} (无 SSL)...');
+      _socket = await Socket.connect(
+        config.server,
+        config.port,
+        timeout: const Duration(seconds: 30),
+      );
+      print('Socket 连接成功');
+      
+      _setupSocketListeners();
+      
+      // 等待欢迎信息
+      final welcome = await _readResponse(timeout: 10);
+      print('服务器响应: $welcome');
+      
+      // 登录
+      return await _login(config.username, config.password);
+    } catch (e, stackTrace) {
+      _lastError = '普通连接失败: $e\n$stackTrace';
+      print(_lastError);
+      return false;
+    }
+  }
+
+  /// SSL 安全连接
+  Future<bool> _connectSecure(ImapConfig config) async {
+    try {
+      print('正在连接 ${config.server}:${config.port} (SSL)...');
+      
+      // 尝试使用安全套接字连接
       _socket = await SecureSocket.connect(
         config.server,
         config.port,
-        timeout: const Duration(seconds: 15),
-      );
-
-      _socket!.listen(
-        (data) {
-          _buffer += utf8.decode(data);
-        },
-        onError: (error) {
-          print('SecureSocket error: $error');
-        },
-        onDone: () {
-          print('SecureSocket closed');
+        timeout: const Duration(seconds: 30),
+        onBadCertificate: (cert) {
+          // 忽略证书验证错误（自签名证书等）
+          print('忽略证书验证');
+          return true;
         },
       );
-
+      print('SSL 连接成功');
+      
+      _setupSocketListeners();
+      
       // 等待欢迎信息
-      await _readResponse(timeout: 5);
-
+      final welcome = await _readResponse(timeout: 10);
+      print('服务器响应: $welcome');
+      
       // 登录
       return await _login(config.username, config.password);
-    } catch (e) {
-      print('安全连接失败: $e');
+    } catch (e, stackTrace) {
+      _lastError = 'SSL 连接失败: $e\n$stackTrace';
+      print(_lastError);
       return false;
     }
+  }
+
+  /// 设置 Socket 监听器
+  void _setupSocketListeners() {
+    _socket!.listen(
+      (data) {
+        try {
+          final decoded = utf8.decode(data);
+          _buffer += decoded;
+          // print('收到数据: $decoded');
+        } catch (e) {
+          print('解码数据失败: $e');
+        }
+      },
+      onError: (error) {
+        _lastError = 'Socket 错误: $error';
+        print(_lastError);
+      },
+      onDone: () {
+        print('Socket 连接关闭');
+      },
+    );
   }
 
   /// 生成 IMAP 标签
   String _tag() {
     _tagCounter++;
-    return 'a$_tagCounter';
+    return 'A$_tagCounter';
   }
 
   /// 发送 IMAP 命令
   Future<void> _sendCommand(String command) async {
-    final data = '$command\r\n';
-    _socket!.add(utf8.encode(data));
-    await _socket!.flush();
+    try {
+      final data = '$command\r\n';
+      print('发送命令: $command');
+      _socket!.add(utf8.encode(data));
+      await _socket!.flush();
+    } catch (e) {
+      throw Exception('发送命令失败: $e');
+    }
   }
 
-  /// 读取响应
-  Future<String> _readResponse({int timeout = 10, String? expectedTag}) async {
+  /// 读取响应（不等待特定标签）
+  Future<String> _readResponse({int timeout = 10}) async {
     final start = DateTime.now();
     while (DateTime.now().difference(start).inSeconds < timeout) {
       if (_buffer.contains('\r\n')) {
@@ -107,24 +141,11 @@ class ImapService {
         } else {
           _buffer = lines.removeLast();
         }
-
-        // 检查是否包含完成标记
-        for (final line in lines) {
-          if (expectedTag != null && line.startsWith('$expectedTag ')) {
-            return lines.join('\n');
-          }
-          if (line.startsWith('* ') || line.startsWith('+ ')) {
-            // 服务器主动推送的数据
-          }
-        }
-
-        if (expectedTag == null) {
-          return lines.join('\n');
-        }
+        return lines.join('\n');
       }
       await Future.delayed(const Duration(milliseconds: 100));
     }
-    throw TimeoutException('读取响应超时');
+    throw TimeoutException('读取响应超时（$timeout秒）');
   }
 
   /// 读取多行响应直到指定标签
@@ -157,23 +178,23 @@ class ImapService {
   Future<bool> _login(String username, String password) async {
     try {
       final tag = _tag();
-      // 使用 base64 编码的登录
-      final userB64 = base64Encode(utf8.encode(username));
-      final passB64 = base64Encode(utf8.encode(password));
-
-      // LOGIN 命令
       await _sendCommand('$tag LOGIN "$username" "$password"');
-      final response = await _readUntilTag(tag, timeout: 10);
-
+      
+      final response = await _readUntilTag(tag, timeout: 20);
+      print('登录响应: $response');
+      
       if (response.contains('$tag OK')) {
         _loggedIn = true;
+        print('登录成功！');
         return true;
       } else {
-        print('登录失败: $response');
+        _lastError = '登录失败: $response';
+        print(_lastError);
         return false;
       }
-    } catch (e) {
-      print('登录异常: $e');
+    } catch (e, stackTrace) {
+      _lastError = '登录异常: $e\n$stackTrace';
+      print(_lastError);
       return false;
     }
   }
@@ -185,6 +206,7 @@ class ImapService {
     String mailbox = 'INBOX',
   }) async {
     if (!_loggedIn || _socket == null) {
+      _lastError = '未连接到服务器';
       throw Exception('未连接到服务器');
     }
 
@@ -194,17 +216,17 @@ class ImapService {
       // 选择邮箱
       var tag = _tag();
       await _sendCommand('$tag SELECT "$mailbox"');
-      await _readUntilTag(tag);
+      await _readUntilTag(tag, timeout: 20);
+      print('已选择邮箱: $mailbox');
 
-      // 计算日期（简单处理：搜索近N天的所有邮件）
-      // 使用 SEARCH SINCE 命令
+      // 计算日期
       final sinceDate = _formatSearchDate(searchDays);
 
       // 第一步：搜索所有邮件
       tag = _tag();
       await _sendCommand('$tag SEARCH SINCE $sinceDate');
-      final searchResponse = await _readUntilTag(tag);
-
+      final searchResponse = await _readUntilTag(tag, timeout: 30);
+      
       // 解析邮件 ID
       final allIds = <String>[];
       for (final line in searchResponse.split('\n')) {
@@ -212,7 +234,7 @@ class ImapService {
           final parts = line.split(' ');
           for (int i = 2; i < parts.length; i++) {
             final id = parts[i].trim();
-            if (id.isNotEmpty) {
+            if (id.isNotEmpty && int.tryParse(id) != null) {
               allIds.add(id);
             }
           }
@@ -224,22 +246,23 @@ class ImapService {
         return emails;
       }
 
-      print('找到 ${allIds.length} 封邮件，正在筛选标题...');
+      print('找到 ${allIds.length} 封邮件');
 
-      // 第二步：获取所有邮件的主题（批量获取）
+      // 第二步：批量获取邮件头
       final matchedIds = <String>[];
-      final batchSize = 50;
+      final batchSize = 30;
 
       for (int i = 0; i < allIds.length; i += batchSize) {
         final batch = allIds.sublist(i, min(i + batchSize, allIds.length));
         tag = _tag();
+        
+        final idsStr = batch.join(',');
         await _sendCommand(
-          '$tag FETCH ${batch.join(',')} (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)])',
+          '$tag FETCH $idsStr (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)])',
         );
 
         try {
           final response = await _readUntilTag(tag, timeout: 60);
-          // 解析 FETCH 响应
           final fetchResults = _parseFetchResponse(response);
           for (final result in fetchResults) {
             final subject = result['subject'] ?? '';
@@ -248,24 +271,7 @@ class ImapService {
             }
           }
         } catch (e) {
-          print('批量获取标题超时，尝试单个获取...');
-          // 单个获取
-          for (final id in batch) {
-            try {
-              final stag = _tag();
-              await _sendCommand(
-                '$stag FETCH $id (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE)])',
-              );
-              final sresp = await _readUntilTag(stag, timeout: 30);
-              final results = _parseFetchResponse(sresp);
-              for (final r in results) {
-                final subject = r['subject'] ?? '';
-                if (_matchesKeywords(subject, keywords)) {
-                  matchedIds.add(r['id']!);
-                }
-              }
-            } catch (_) {}
-          }
+          print('批量获取失败: $e');
         }
       }
 
@@ -276,12 +282,10 @@ class ImapService {
         try {
           tag = _tag();
           await _sendCommand('$tag FETCH $id (BODY[])');
-          final response = await _readUntilTag(tag, timeout: 60);
+          final response = await _readUntilTag(tag, timeout: 120);
 
-          // 解析完整的邮件内容
           final email = _parseFullEmail(response, id);
           if (email != null) {
-            // 跳过回复/转发
             if (!_isReplyOrForward(email.subject)) {
               emails.add(email);
             }
@@ -292,8 +296,9 @@ class ImapService {
       }
 
       print('最终匹配有效邮件: ${emails.length} 封');
-    } catch (e) {
-      print('搜索邮件出错: $e');
+    } catch (e, stackTrace) {
+      _lastError = '搜索邮件出错: $e\n$stackTrace';
+      print(_lastError);
       rethrow;
     }
 
@@ -321,10 +326,8 @@ class ImapService {
     String? date;
 
     for (final line in lines) {
-      // 匹配 * N FETCH
       final fetchMatch = RegExp(r'^\* (\d+) FETCH').firstMatch(line);
       if (fetchMatch != null) {
-        // 保存前一条
         if (currentId != null) {
           results.add({
             'id': currentId,
@@ -345,7 +348,6 @@ class ImapService {
         if (match != null) {
           subject = match.group(1)?.trim() ?? '';
         } else {
-          // 多行主题
           final idx = line.indexOf('SUBJECT', 0);
           if (idx >= 0) {
             subject = line.substring(idx + 7).trim();
@@ -368,7 +370,6 @@ class ImapService {
       }
     }
 
-    // 保存最后一条
     if (currentId != null) {
       results.add({
         'id': currentId,
@@ -378,10 +379,8 @@ class ImapService {
       });
     }
 
-    // 去重（按ID）
     final seen = <String>{};
     results.removeWhere((r) => !seen.add(r['id']!));
-
     return results;
   }
 
@@ -394,35 +393,69 @@ class ImapService {
       final lines = response.split('\n');
       bool inHeader = true;
       bool inBody = false;
-
-      for (final line in lines) {
-        if (inHeader && line.trim().isEmpty) {
-          inHeader = false;
-          inBody = true;
-          continue;
+      
+      // 找到 BODY[] 的内容开始位置
+      int bodyStartIdx = -1;
+      for (int i = 0; i < lines.length; i++) {
+        if (lines[i].contains('BODY[]') && lines[i].contains('{')) {
+          bodyStartIdx = i + 1;
+          break;
         }
+      }
 
-        if (inHeader) {
-          if (line.toLowerCase().startsWith('subject:')) {
-            subject = _decodeMimeHeader(
-              line.substring(8).trim(),
-            );
-          } else if (line.toLowerCase().startsWith('from:')) {
+      if (bodyStartIdx < 0) {
+        // 简单解析模式
+        for (final line in lines) {
+          if (inHeader && line.trim().isEmpty) {
+            inHeader = false;
+            inBody = true;
+            continue;
+          }
+
+          if (inHeader) {
+            final lower = line.toLowerCase();
+            if (lower.startsWith('subject:')) {
+              subject = _decodeMimeHeader(line.substring(8).trim());
+            } else if (lower.startsWith('from:')) {
+              from = _decodeMimeHeader(line.substring(5).trim());
+            } else if (lower.startsWith('to:')) {
+              to = _decodeMimeHeader(line.substring(3).trim());
+            } else if (lower.startsWith('cc:')) {
+              cc = _decodeMimeHeader(line.substring(3).trim());
+            } else if (lower.startsWith('date:')) {
+              date = line.substring(5).trim();
+            }
+          } else if (inBody) {
+            bodyBuffer.writeln(line);
+          }
+        }
+      } else {
+        // 带 BODY[] 的解析
+        for (final line in lines) {
+          final lower = line.toLowerCase();
+          if (lower.startsWith('subject:')) {
+            subject = _decodeMimeHeader(line.substring(8).trim());
+          } else if (lower.startsWith('from:')) {
             from = _decodeMimeHeader(line.substring(5).trim());
-          } else if (line.toLowerCase().startsWith('to:')) {
+          } else if (lower.startsWith('to:')) {
             to = _decodeMimeHeader(line.substring(3).trim());
-          } else if (line.toLowerCase().startsWith('cc:')) {
+          } else if (lower.startsWith('cc:')) {
             cc = _decodeMimeHeader(line.substring(3).trim());
-          } else if (line.toLowerCase().startsWith('date:')) {
+          } else if (lower.startsWith('date:')) {
             date = line.substring(5).trim();
           }
-        } else if (inBody) {
-          bodyBuffer.writeln(line);
+        }
+        
+        // 提取正文
+        for (int i = bodyStartIdx; i < lines.length; i++) {
+          if (lines[i].trim() == ')' || lines[i].startsWith('A') && lines[i].contains('OK')) {
+            break;
+          }
+          bodyBuffer.writeln(lines[i]);
         }
       }
 
       var body = bodyBuffer.toString().trim();
-      // 清理 MIME 边界和编码
       body = _cleanBody(body);
 
       return EmailModel(
@@ -439,7 +472,7 @@ class ImapService {
     }
   }
 
-  /// 解码 MIME 编码的标题 (如 =?UTF-8?B?...?=)
+  /// 解码 MIME 编码的标题
   String _decodeMimeHeader(String header) {
     if (header.isEmpty) return header;
 
@@ -453,14 +486,13 @@ class ImapService {
         if (encoding == 'B') {
           return utf8.decode(base64.decode(encoded));
         } else {
-          // Q 编码
           final decoded = encoded
               .replaceAll('_', ' ')
               .replaceAllMapped(RegExp(r'=([0-9A-F]{2})'), (m) {
-                return String.fromCharCode(
-                  int.parse(m.group(1)!, radix: 16),
-                );
-              });
+            return String.fromCharCode(
+              int.parse(m.group(1)!, radix: 16),
+            );
+          });
           return utf8.decode(decoded.runes.toList());
         }
       } catch (_) {
@@ -497,11 +529,8 @@ class ImapService {
 
   /// 清理邮件正文
   String _cleanBody(String body) {
-    // 移除 MIME 边界标记
     body = body.replaceAll(RegExp(r'--=_\w+'), '');
-    // 移除 Content-* 头
     body = body.replaceAll(RegExp(r'^Content-.*$', multiLine: true), '');
-    // 移除多余空行
     body = body.replaceAll(RegExp(r'\n{3,}'), '\n\n');
     return body.trim();
   }
@@ -509,7 +538,7 @@ class ImapService {
   /// 断开连接
   void disconnect() {
     try {
-      if (_loggedIn) {
+      if (_loggedIn && _socket != null) {
         final tag = _tag();
         _sendCommand('$tag LOGOUT');
       }
