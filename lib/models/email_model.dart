@@ -56,14 +56,14 @@ class ImapConfig {
   int searchDays;
 
   ImapConfig({
-    this.server = '',
+    this.server = 'imap.263.net',
     this.port = 993,
     this.useSSL = true,
     this.username = '',
     this.password = '',
     this.mailbox = 'INBOX',
-    this.keywords = const [],
-    this.searchDays = 30,
+    this.keywords = const ['会议纪要', '会议记录', '会议摘要', '会议总结', '会谈纪要', '纪要'],
+    this.searchDays = 90,
   });
 
   Map<String, dynamic> toJson() => {
