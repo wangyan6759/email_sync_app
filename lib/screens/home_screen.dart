@@ -7,7 +7,6 @@ import 'config_screen.dart';
 import 'email_list_screen.dart';
 import 'export_screen.dart';
 
-/// 主页面 - 带底部导航
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -21,6 +20,9 @@ class _HomeScreenState extends State<HomeScreen> {
   List<EmailModel> _emails = [];
   bool _isSyncing = false;
   bool _isConfigured = false;
+  List<String> _syncLogs = [];
+  int _progress = 0;
+  int _total = 0;
 
   final _pages = <Widget>[];
   final _pageKeys = <GlobalKey>[];
@@ -33,6 +35,26 @@ class _HomeScreenState extends State<HomeScreen> {
       EmailListScreen(emails: _emails),
       ExportScreen(emails: _emails),
     ]);
+    _checkConfig();
+  }
+
+  void _checkConfig() {
+    if (_config.username.isNotEmpty && _config.password.isNotEmpty) {
+      setState(() => _isConfigured = true);
+    }
+  }
+
+  void _addLog(String message) {
+    setState(() {
+      _syncLogs.add(message);
+    });
+  }
+
+  void _updateProgress(int progress, int total) {
+    setState(() {
+      _progress = progress;
+      _total = total;
+    });
   }
 
   Widget _buildStatusPage() {
@@ -41,7 +63,6 @@ class _HomeScreenState extends State<HomeScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // 状态卡片
           Card(
             elevation: 0,
             shape: RoundedRectangleBorder(
@@ -66,8 +87,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           ? Icons.mark_email_read
                           : Icons.email_outlined,
                       size: 36,
-                      color:
-                          _isConfigured ? Colors.blue.shade500 : Colors.grey,
+                      color: _isConfigured ? Colors.blue.shade500 : Colors.grey,
                     ),
                   ),
                   const SizedBox(height: 16),
@@ -89,7 +109,6 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 16),
 
-          // 快捷操作
           Row(
             children: [
               Expanded(
@@ -122,8 +141,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           const SizedBox(height: 20),
 
-          // 同步进度
-          if (_isSyncing)
+          if (_isSyncing) ...[
             Card(
               elevation: 0,
               shape: RoundedRectangleBorder(
@@ -131,31 +149,95 @@ class _HomeScreenState extends State<HomeScreen> {
                 side: BorderSide(color: Colors.blue.shade200),
               ),
               color: Colors.blue.shade50,
-              child: const Padding(
-                padding: EdgeInsets.all(16),
-                child: Row(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
                   children: [
-                    SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
+                    Row(
+                      children: [
+                        const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        ),
+                        const SizedBox(width: 12),
+                        const Text('正在同步邮件...', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500)),
+                      ],
                     ),
-                    SizedBox(width: 12),
-                    Text('正在同步邮件...', style: TextStyle(fontSize: 14)),
+                    if (_total > 0) ...[
+                      const SizedBox(height: 12),
+                      LinearProgressIndicator(
+                        value: _total > 0 ? _progress / _total : null,
+                        backgroundColor: Colors.blue.shade100,
+                        color: Colors.blue,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      const SizedBox(height: 8),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.end,
+                        children: [
+                          Text('${_progress}/${_total}', style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               ),
             ),
+            const SizedBox(height: 12),
+            Card(
+              elevation: 0,
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(color: Colors.grey.shade200),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('同步日志', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
+                    const SizedBox(height: 8),
+                    Container(
+                      height: 180,
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: ListView.builder(
+                        reverse: true,
+                        padding: const EdgeInsets.all(8),
+                        itemCount: _syncLogs.length,
+                        itemBuilder: (context, index) {
+                          final log = _syncLogs[_syncLogs.length - 1 - index];
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: Text(
+                              log,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: log.contains('✅') ? Colors.green 
+                                    : log.contains('❌') ? Colors.red 
+                                    : Colors.grey.shade700,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
 
-          // 最近邮件预览
           if (_emails.isNotEmpty) ...[
             const SizedBox(height: 20),
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 const Text('最近邮件',
-                    style:
-                        TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
                 TextButton(
                   onPressed: () => setState(() => _currentIndex = 1),
                   child: const Text('查看全部'),
@@ -252,15 +334,29 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _startSync() async {
     if (!_isConfigured) return;
 
-    setState(() => _isSyncing = true);
+    setState(() {
+      _isSyncing = true;
+      _syncLogs = [];
+      _progress = 0;
+      _total = 0;
+    });
 
     try {
+      _addLog('📧 开始同步邮件...');
+
       final service = ImapService();
+      service.setProgressCallback((message, progress, total) {
+        _addLog(message);
+        _updateProgress(progress, total);
+      });
+
+      _addLog('🔌 正在连接服务器...');
       final connected = await service.connect(_config);
 
       if (!connected) {
+        final errorMsg = service.lastError ?? '连接失败，请检查邮箱配置';
+        _addLog('❌ $errorMsg');
         if (mounted) {
-          final errorMsg = service.lastError ?? '连接失败，请检查邮箱配置';
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
               content: Text(errorMsg),
@@ -272,6 +368,7 @@ class _HomeScreenState extends State<HomeScreen> {
         return;
       }
 
+      _addLog('🔍 正在搜索邮件...');
       final emails = await service.searchEmails(
         _config.keywords,
         searchDays: _config.searchDays,
@@ -282,6 +379,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
       if (mounted) {
         setState(() => _emails = emails);
+        _addLog('✅ 同步完成！找到 ${emails.length} 封匹配邮件');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('同步完成，找到 ${emails.length} 封匹配邮件'),
@@ -290,6 +388,7 @@ class _HomeScreenState extends State<HomeScreen> {
         );
       }
     } catch (e) {
+      _addLog('❌ 同步失败: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
