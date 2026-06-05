@@ -1,27 +1,39 @@
 import 'dart:io';
 import 'dart:convert';
-import 'dart:math';
 import '../models/email_model.dart';
 
-/// IMAP 邮件同步服务 - 参考 Python 旧项目实现
+typedef ProgressCallback = void Function(String message, int progress, int total);
+
 class ImapService {
   Socket? _socket;
   String _buffer = '';
   bool _loggedIn = false;
   int _tagCounter = 0;
   String? _lastError;
+  ProgressCallback? _progressCallback;
 
   String? get lastError => _lastError;
 
-  /// 连接到 IMAP 服务器
+  void setProgressCallback(ProgressCallback callback) {
+    _progressCallback = callback;
+  }
+
+  void _log(String message, {int progress = 0, int total = 0}) {
+    print(message);
+    _progressCallback?.call(message, progress, total);
+  }
+
   Future<bool> connect(ImapConfig config) async {
     try {
       _lastError = null;
       _tagCounter = 0;
 
-      print('连接邮箱 ${config.server} ...');
-      
+      _log('开始连接 IMAP 服务器...');
+      _log('服务器: ${config.server}:${config.port}');
+      _log('SSL: ${config.useSSL ? '开启' : '关闭'}');
+
       if (config.useSSL) {
+        _log('正在建立安全连接...');
         _socket = await SecureSocket.connect(
           config.server,
           config.port,
@@ -29,6 +41,7 @@ class ImapService {
           onBadCertificate: (cert) => true,
         );
       } else {
+        _log('正在建立连接...');
         _socket = await Socket.connect(
           config.server,
           config.port,
@@ -36,17 +49,18 @@ class ImapService {
         );
       }
 
+      _log('连接成功！');
       _setupSocketListeners();
 
-      // 等待欢迎信息
+      _log('等待服务器欢迎信息...');
       final welcome = await _readResponse(timeout: 30);
-      print('服务器响应: $welcome');
+      _log('服务器响应: ${welcome.substring(0, min(welcome.length, 50))}...');
 
-      // 登录
       return await _login(config.username, config.password);
     } catch (e, stackTrace) {
-      _lastError = '连接失败: $e\n$stackTrace';
-      print(_lastError);
+      _lastError = '连接失败: $e';
+      _log('❌ 连接失败: $e');
+      print(stackTrace);
       return false;
     }
   }
@@ -63,10 +77,10 @@ class ImapService {
       },
       onError: (error) {
         _lastError = 'Socket 错误: $error';
-        print(_lastError);
+        _log('❌ Socket 错误: $error');
       },
       onDone: () {
-        print('Socket 连接关闭');
+        _log('连接已关闭');
       },
     );
   }
@@ -79,7 +93,6 @@ class ImapService {
   Future<void> _sendCommand(String command) async {
     try {
       final data = '$command\r\n';
-      print('发送命令: $command');
       _socket!.add(utf8.encode(data));
       await _socket!.flush();
     } catch (e) {
@@ -92,11 +105,7 @@ class ImapService {
     while (DateTime.now().difference(start).inSeconds < timeout) {
       if (_buffer.contains('\r\n')) {
         final lines = _buffer.split('\r\n');
-        if (_buffer.endsWith('\r\n')) {
-          _buffer = '';
-        } else {
-          _buffer = lines.removeLast();
-        }
+        _buffer = _buffer.endsWith('\r\n') ? '' : lines.removeLast();
         return lines.join('\n');
       }
       await Future.delayed(const Duration(milliseconds: 100));
@@ -111,11 +120,7 @@ class ImapService {
     while (DateTime.now().difference(start).inSeconds < timeout) {
       if (_buffer.contains('\r\n')) {
         final lines = _buffer.split('\r\n');
-        if (_buffer.endsWith('\r\n')) {
-          _buffer = '';
-        } else {
-          _buffer = lines.removeLast();
-        }
+        _buffer = _buffer.endsWith('\r\n') ? '' : lines.removeLast();
 
         for (final line in lines) {
           allLines.add(line);
@@ -131,24 +136,26 @@ class ImapService {
 
   Future<bool> _login(String username, String password) async {
     try {
+      _log('正在登录...');
+      _log('用户名: $username');
+
       final tag = _tag();
       await _sendCommand('$tag LOGIN "$username" "$password"');
 
       final response = await _readUntilTag(tag, timeout: 60);
-      print('登录响应: $response');
-
+      
       if (response.contains('$tag OK')) {
         _loggedIn = true;
-        print('登录成功！');
+        _log('✅ 登录成功！');
         return true;
       } else {
-        _lastError = '登录失败: $response';
-        print(_lastError);
+        _lastError = '登录失败: ${response.substring(0, min(response.length, 100))}';
+        _log('❌ 登录失败');
         return false;
       }
-    } catch (e, stackTrace) {
-      _lastError = '登录异常: $e\n$stackTrace';
-      print(_lastError);
+    } catch (e) {
+      _lastError = '登录异常: $e';
+      _log('❌ 登录异常: $e');
       return false;
     }
   }
@@ -170,7 +177,6 @@ class ImapService {
         return true;
       }
     }
-    // 额外检查主题中是否包含回复相关内容
     if (subject.contains('回复:') || subject.contains('回复：') || subject.contains('Re:')) {
       return true;
     }
@@ -196,7 +202,6 @@ class ImapService {
   String _decodeMimeStr(String? s) {
     if (s == null || s.isEmpty) return '';
     
-    // 简单的 MIME 解码处理
     final regex = RegExp(r'=\?([^?]+)\?([BbQq])\?([^?]*)\?=');
     return s.replaceAllMapped(regex, (match) {
       final encoding = match.group(2)?.toUpperCase() ?? 'B';
@@ -211,7 +216,6 @@ class ImapService {
     });
   }
 
-  /// 搜索邮件 - 参考 Python 旧项目
   Future<List<EmailModel>> searchEmails(
     List<String> keywords, {
     int searchDays = 90,
@@ -225,23 +229,20 @@ class ImapService {
     final emails = <EmailModel>[];
 
     try {
-      // 选择邮箱（只读）
+      _log('选择邮箱: $mailbox');
       final selectTag = _tag();
       await _sendCommand('$selectTag SELECT "$mailbox"');
       final selectResp = await _readUntilTag(selectTag, timeout: 30);
-      print('已选择邮箱: $mailbox');
+      _log('邮箱选择成功');
 
-      // 计算搜索日期
       final sinceDate = _formatSearchDate(searchDays);
-      print('搜索日期: $sinceDate 以来');
+      _log('搜索日期范围: $sinceDate 以来');
 
-      // 搜索邮件
+      _log('开始搜索邮件...');
       final searchTag = _tag();
       await _sendCommand('$searchTag SEARCH SINCE $sinceDate');
       final searchResp = await _readUntilTag(searchTag, timeout: 60);
-      print('搜索响应: $searchResp');
 
-      // 解析邮件 ID
       final idList = <String>[];
       for (final line in searchResp.split('\n')) {
         if (line.startsWith('* SEARCH')) {
@@ -256,27 +257,24 @@ class ImapService {
       }
 
       if (idList.isEmpty) {
-        print('没有找到邮件');
+        _log('未找到任何邮件');
         return emails;
       }
 
-      print('共 ${idList.length} 封邮件，开始筛选...');
+      _log('找到 ${idList.length} 封邮件，开始筛选...');
 
-      // 第一遍：获取头部信息筛选
       final matchedIds = <String>[];
       int processed = 0;
 
       for (final mid in idList) {
         processed++;
-        if (processed > 1000) break; // 上限1000封
+        if (processed > 1000) break;
 
         try {
-          // 获取头部信息
           final hdrTag = _tag();
           await _sendCommand('$hdrTag FETCH $mid (BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO DATE)])');
           final hdrResp = await _readUntilTag(hdrTag, timeout: 30);
 
-          // 解析头部
           String? subject;
           String? sender;
           String? recipient;
@@ -297,50 +295,56 @@ class ImapService {
           }
 
           if (subject != null && subject.isNotEmpty) {
-            // 去回复/转发
             if (_isReplyOrForward(subject)) {
               continue;
             }
-            // 关键词匹配
             if (_matchesKeywords(subject, keywords)) {
               matchedIds.add(mid);
             }
           }
         } catch (e) {
-          print('获取头部失败 $mid: $e');
           continue;
         }
 
         if (processed % 50 == 0) {
-          print('  进度 $processed/${idList.length}，已匹配 ${matchedIds.length}...');
+          _log('筛选进度: $processed/${idList.length}，已匹配 ${matchedIds.length} 封', 
+              progress: processed, total: idList.length);
         }
       }
 
-      print('匹配到 ${matchedIds.length} 封邮件，开始获取完整内容...');
+      _log('匹配到 ${matchedIds.length} 封符合条件的邮件');
 
-      // 第二遍：获取完整邮件内容
-      for (final mid in matchedIds) {
+      if (matchedIds.isEmpty) {
+        _log('没有找到匹配关键词的邮件');
+        return emails;
+      }
+
+      _log('开始获取完整邮件内容...');
+
+      for (int i = 0; i < matchedIds.length; i++) {
+        final mid = matchedIds[i];
         try {
           final fullTag = _tag();
           await _sendCommand('$fullTag FETCH $mid (RFC822)');
           final fullResp = await _readUntilTag(fullTag, timeout: 120);
 
-          // 解析完整邮件
           final email = _parseFullEmail(fullResp, mid);
           if (email != null) {
             emails.add(email);
           }
         } catch (e) {
-          print('获取完整邮件失败 $mid: $e');
           continue;
         }
+
+        _log('获取进度: ${i + 1}/${matchedIds.length}', 
+            progress: i + 1, total: matchedIds.length);
       }
 
-      print('最终匹配有效邮件: ${emails.length} 封');
+      _log('✅ 完成！共获取 ${emails.length} 封邮件');
       return emails;
-    } catch (e, stackTrace) {
-      _lastError = '搜索邮件出错: $e\n$stackTrace';
-      print(_lastError);
+    } catch (e) {
+      _lastError = '搜索邮件出错: $e';
+      _log('❌ 搜索邮件出错: $e');
       rethrow;
     }
   }
@@ -357,7 +361,6 @@ class ImapService {
       bool inHeader = true;
       bool inBody = false;
 
-      // 先解析头部
       for (final line in lines) {
         final lineLower = line.toLowerCase();
         
@@ -378,7 +381,6 @@ class ImapService {
             date = line.substring(5).trim();
           }
         } else if (inBody) {
-          // 跳过 MIME 头
           if (line.trim().startsWith('Content-') || 
               line.trim().startsWith('--') ||
               line.trim().startsWith('Content-Type')) {
@@ -389,7 +391,6 @@ class ImapService {
       }
 
       var body = bodyBuffer.toString().trim();
-      // 清理
       body = body.replaceAll(RegExp(r'--=_\w+'), '');
       body = body.replaceAll(RegExp(r'\n{3,}'), '\n\n');
 
