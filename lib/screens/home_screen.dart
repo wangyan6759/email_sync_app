@@ -256,20 +256,16 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       final service = ImapService();
-
-      bool connected;
-      if (_config.useSSL) {
-        connected = await service.connectSecure(_config);
-      } else {
-        connected = await service.connect(_config);
-      }
+      final connected = await service.connect(_config);
 
       if (!connected) {
         if (mounted) {
+          final errorMsg = service.lastError ?? '连接失败，请检查邮箱配置';
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('连接失败，请检查邮箱配置'),
+            SnackBar(
+              content: Text(errorMsg),
               backgroundColor: Colors.red,
+              duration: const Duration(seconds: 10),
             ),
           );
         }
